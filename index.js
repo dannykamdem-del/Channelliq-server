@@ -11,45 +11,58 @@ app.use(express.json());
 
 app.get("/", (req, res) => res.json({ status: "ChannelIQ server running" }));
 
-app.get("/channel", async (req, res) => {
-  const { apiKey, channelId } = req.query;
-  if (!apiKey || !channelId) return res.status(400).json({ error: "Missing params" });
+app.get("/lookup", async (req, res) => {
+  const { handle } = req.query;
+  if (!handle) return res.status(400).json({ error: "Missing handle" });
   try {
-    const r = await fetch(`${YT}/channels?part=snippet,statistics,contentDetails&id=${channelId}&key=${apiKey}`);
+    const h = handle.startsWith("@") ? handle.slice(1) : handle;
+    const r = await fetch(`${YT}/channels?part=snippet,statistics,contentDetails&forHandle=${h}&key=${process.env.YT_API_KEY}`);
+    const d = await r.json();
+    if (d.error) return res.status(400).json({ error: d.error.message });
+    if (!d.items?.length) return res.status(404).json({ error: "Channel not found. Check your handle and try again." });
+    res.json(d.items[0]);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get("/channel", async (req, res) => {
+  const { channelId } = req.query;
+  if (!channelId) return res.status(400).json({ error: "Missing channelId" });
+  try {
+    const r = await fetch(`${YT}/channels?part=snippet,statistics,contentDetails&id=${channelId}&key=${process.env.YT_API_KEY}`);
     const d = await r.json();
     if (d.error) return res.status(400).json({ error: d.error.message });
     res.json(d);
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 app.get("/videos", async (req, res) => {
-  const { apiKey, channelId } = req.query;
-  if (!apiKey || !channelId) return res.status(400).json({ error: "Missing params" });
+  const { channelId } = req.query;
+  if (!channelId) return res.status(400).json({ error: "Missing channelId" });
   try {
-    const cr = await fetch(`${YT}/channels?part=contentDetails&id=${channelId}&key=${apiKey}`);
+    const cr = await fetch(`${YT}/channels?part=contentDetails&id=${channelId}&key=${process.env.YT_API_KEY}`);
     const cd = await cr.json();
     if (cd.error) return res.status(400).json({ error: cd.error.message });
     const uploadsId = cd.items[0].contentDetails.relatedPlaylists.uploads;
-    const pr = await fetch(`${YT}/playlistItems?part=contentDetails&playlistId=${uploadsId}&maxResults=50&key=${apiKey}`);
+    const pr = await fetch(`${YT}/playlistItems?part=contentDetails&playlistId=${uploadsId}&maxResults=50&key=${process.env.YT_API_KEY}`);
     const pd = await pr.json();
     if (!pd.items?.length) return res.json({ items: [] });
     const ids = pd.items.map(i => i.contentDetails.videoId).join(",");
-    const vr = await fetch(`${YT}/videos?part=snippet,statistics,contentDetails&id=${ids}&key=${apiKey}`);
+    const vr = await fetch(`${YT}/videos?part=snippet,statistics,contentDetails&id=${ids}&key=${process.env.YT_API_KEY}`);
     const vd = await vr.json();
     if (vd.error) return res.status(400).json({ error: vd.error.message });
     res.json(vd);
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 app.get("/comments", async (req, res) => {
-  const { apiKey, videoId } = req.query;
-  if (!apiKey || !videoId) return res.status(400).json({ error: "Missing params" });
+  const { videoId } = req.query;
+  if (!videoId) return res.status(400).json({ error: "Missing videoId" });
   try {
-    const r = await fetch(`${YT}/commentThreads?part=snippet&videoId=${videoId}&maxResults=100&order=relevance&key=${apiKey}`);
+    const r = await fetch(`${YT}/commentThreads?part=snippet&videoId=${videoId}&maxResults=100&order=relevance&key=${process.env.YT_API_KEY}`);
     const d = await r.json();
     if (d.error) return res.status(400).json({ error: d.error.message });
     res.json(d);
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post("/sentiment", async (req, res) => {
@@ -80,19 +93,6 @@ app.post("/sentiment", async (req, res) => {
     const raw = (d.content || []).map(b => b.text || "").join("");
     const result = JSON.parse(raw.replace(/```json|```/g, "").trim());
     res.json(result);
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-app.get("/lookup", async (req, res) => {
-  const { handle } = req.query;
-  if (!handle) return res.status(400).json({ error: "Missing handle" });
-  try {
-    const h = handle.startsWith("@") ? handle.slice(1) : handle;
-    const r = await fetch(`${YT}/channels?part=snippet,statistics,contentDetails&forHandle=${h}&key=${process.env.YT_API_KEY}`);
-    const d = await r.json();
-    if (d.error) return res.status(400).json({ error: d.error.message });
-    if (!d.items?.length) return res.status(404).json({ error: "Channel not found. Check your handle and try again." });
-    res.json(d.items[0]);
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
