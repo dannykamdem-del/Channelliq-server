@@ -56,7 +56,7 @@ app.post("/sentiment", async (req, res) => {
   const { comments } = req.body;
   if (!comments || !comments.length) return res.status(400).json({ error: "No comments provided" });
   try {
-    const key = "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";
+    const key = "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";
     if (!key) return res.status(500).json({ error: "Missing Anthropic API key on server" });
     const sample = comments.slice(0, 100).map(c => c.text).join("\n---\n");
     const r = await fetch("https://api.anthropic.com/v1/messages", {
