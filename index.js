@@ -83,4 +83,17 @@ app.post("/sentiment", async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+app.get("/lookup", async (req, res) => {
+  const { handle } = req.query;
+  if (!handle) return res.status(400).json({ error: "Missing handle" });
+  try {
+    const h = handle.startsWith("@") ? handle.slice(1) : handle;
+    const r = await fetch(`${YT}/channels?part=snippet,statistics,contentDetails&forHandle=${h}&key=${process.env.YT_API_KEY}`);
+    const d = await r.json();
+    if (d.error) return res.status(400).json({ error: d.error.message });
+    if (!d.items?.length) return res.status(404).json({ error: "Channel not found. Check your handle and try again." });
+    res.json(d.items[0]);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 app.listen(PORT, () => console.log("ChannelIQ server running on port " + PORT));
