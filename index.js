@@ -47,7 +47,7 @@ app.get("/comments", async (req, res) => {
   try {
     const r = await fetch(`${YT}/commentThreads?part=snippet&videoId=${videoId}&maxResults=100&order=relevance&key=${apiKey}`);
     const d = await r.json();
-    if (d.error) return res.status(400).json({ error: d.error.message });
+    if (d.error) return res.status(400).json({ error: d.error.message, full: d.error });
     res.json(d);
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
