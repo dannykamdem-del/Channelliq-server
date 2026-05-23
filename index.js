@@ -71,7 +71,7 @@ app.post("/sentiment", async (req, res) => {
       })
     });
     const d = await r.json();
-    if (d.error) return res.status(400).json({ error: d.error.message });
+    if (d.error) return res.status(400).json({ error: d.error.message, type: d.error.type, hasKey: !!process.env.ANTHROPIC_API_KEY });
     const raw = (d.content || []).map(b => b.text || "").join("");
     const result = JSON.parse(raw.replace(/```json|```/g, "").trim());
     res.json(result);
