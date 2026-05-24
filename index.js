@@ -68,88 +68,80 @@ app.get("/comments", async (req, res) => {
 
 // ── COMMENT PROCESSING PIPELINE ───────────────────────────────────────────────
 
-// Step 1: Spam filter
+function getSpamReason(text) {
+  if (!text || typeof text !== "string") return "Empty or invalid";
+  const clean = text.trim();
+  if (clean.length < 10) return "Too short (under 10 characters)";
+  if (/^[\p{Emoji}\s\W]+$/u.test(clean)) return "Emoji or symbols only";
+  if (clean.split(/\s+/).filter(w => w.length > 1).length < 3) return "Too few words (under 3)";
+  if (/(.)\1{5,}/.test(clean)) return "Repetitive characters";
+  if (/^https?:\/\/\S+$/.test(clean)) return "URL only";
+  return "Spam pattern detected";
+}
+
 function isSpam(text) {
   if (!text || typeof text !== "string") return true;
   const clean = text.trim();
-  // Too short
   if (clean.length < 10) return true;
-  // Only emoji or symbols
   if (/^[\p{Emoji}\s\W]+$/u.test(clean)) return true;
-  // Word count under 3
-  const words = clean.split(/\s+/).filter(w => w.length > 1);
-  if (words.length < 3) return true;
-  // Repetitive characters e.g. "hahahahaha" or "!!!!!!"
+  if (clean.split(/\s+/).filter(w => w.length > 1).length < 3) return true;
   if (/(.)\1{5,}/.test(clean)) return true;
-  // Pure URL
   if (/^https?:\/\/\S+$/.test(clean)) return true;
   return false;
 }
 
-// Step 2: Language detection (simple heuristic — checks for non-Latin characters)
 function detectLanguage(text) {
   const nonLatin = /[^\u0000-\u024F\u1E00-\u1EFF]/;
   if (nonLatin.test(text)) return "non-latin";
-  // Common non-English word patterns (very basic)
-  const likely_non_english = /\b(das|der|die|und|ich|que|est|les|une|por|para|com|uma|não|und|sie|auf|mit|von)\b/i;
+  const likely_non_english = /\b(das|der|die|und|ich|que|est|les|une|por|para|com|uma|não|sie|auf|mit|von)\b/i;
   if (likely_non_english.test(text)) return "likely-non-english";
   return "en";
 }
 
-// Step 3: Translate non-English comments
 async function translateToEnglish(text) {
   try {
     const r = await fetch(LIBRE_TRANSLATE, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        q: text,
-        source: "auto",
-        target: "en",
-        format: "text"
-      })
+      body: JSON.stringify({ q: text, source: "auto", target: "en", format: "text" })
     });
     const d = await r.json();
     return d.translatedText || text;
-  } catch(_) {
-    return text; // Fall back to original if translation fails
-  }
+  } catch(_) { return text; }
 }
 
-// Step 4: Calculate like weight
-// Returns a normalised weight between 1 and 10
 function likeWeight(likes, maxLikes) {
   if (!maxLikes || maxLikes === 0) return 1;
   const normalised = likes / maxLikes;
   return Math.max(1, Math.round(normalised * 10));
 }
 
-// Step 5: Full pipeline
 async function processComments(rawComments) {
-  // Filter spam first
-  const filtered = rawComments.filter(c => !isSpam(c.text));
+  const filtered = [];
+  const spam = [];
 
-  // Find max likes for normalisation
+  for (const c of rawComments) {
+    if (isSpam(c.text)) {
+      spam.push({ ...c, spamReason: getSpamReason(c.text) });
+    } else {
+      filtered.push(c);
+    }
+  }
+
   const maxLikes = Math.max(...filtered.map(c => parseInt(c.likes || 0)), 1);
-
-  // Find most liked comment
   const mostLiked = [...filtered].sort((a, b) => parseInt(b.likes || 0) - parseInt(a.likes || 0))[0];
 
-  // Process each comment
   const processed = [];
   for (const c of filtered) {
     const lang = detectLanguage(c.text);
     let translatedText = c.text;
     let wasTranslated = false;
-
     if (lang !== "en") {
       translatedText = await translateToEnglish(c.text);
       wasTranslated = true;
     }
-
     const likes = parseInt(c.likes || 0);
     const weight = likeWeight(likes, maxLikes);
-
     processed.push({
       ...c,
       originalText: c.text,
@@ -162,11 +154,11 @@ async function processComments(rawComments) {
     });
   }
 
-  // Sort by weight descending so most significant comments come first
   processed.sort((a, b) => b.weight - a.weight);
 
   return {
     processed,
+    spam,
     stats: {
       total: rawComments.length,
       afterSpamFilter: filtered.length,
@@ -187,18 +179,13 @@ async function processComments(rawComments) {
 app.post("/sentiment", async (req, res) => {
   const { comments, goal, creatorType, referenceVideoIds } = req.body;
   if (!comments || !comments.length) return res.status(400).json({ error: "No comments provided" });
-
   try {
-    // Run pipeline
-    const { processed, stats } = await processComments(comments);
-
+    const { processed, spam, stats } = await processComments(comments);
     if (!processed.length) return res.status(400).json({ error: "No valid comments after filtering" });
 
     const key = process.env.ANTHROPIC_API_KEY;
     if (!key) return res.status(500).json({ error: "Missing Anthropic API key" });
 
-    // Build weighted comment sample for Claude
-    // Repeat higher-weight comments to naturally emphasise them
     const weightedSample = [];
     for (const c of processed.slice(0, 120)) {
       const repetitions = Math.min(c.weight, 3);
@@ -207,7 +194,6 @@ app.post("/sentiment", async (req, res) => {
       }
     }
 
-    // Build goal context string
     let goalContext = "";
     if (goal) goalContext += `The creator's primary goal is: ${goal}. `;
     if (creatorType) goalContext += `They create ${creatorType} content. `;
@@ -267,11 +253,11 @@ Return exactly this structure:
     const raw = (d.content || []).map(b => b.text || "").join("");
     const result = JSON.parse(raw.replace(/```json|```/g, "").trim());
 
-    // Attach pipeline stats and most liked comment to response
     res.json({
       ...result,
       pipelineStats: stats,
-      mostLiked: stats.mostLiked
+      mostLiked: stats.mostLiked,
+      spamSample: spam.slice(0, 50)
     });
 
   } catch(e) { res.status(500).json({ error: e.message }); }
