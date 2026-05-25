@@ -17,7 +17,7 @@ app.get("/lookup", async (req, res) => {
   if (!handle) return res.status(400).json({ error: "Missing handle" });
   try {
     const h = handle.startsWith("@") ? handle.slice(1) : handle;
-    const r = await fetch(`${YT}/channels?part=snippet,statistics,contentDetails&forHandle=${h}&key=${process.env.YT_API_KEY}`);
+    const r = await fetch(`${YT}/channels?part=snippet,statistics,contentDetails,brandingSettings&forHandle=${h}&key=${process.env.YT_API_KEY}`);
     const d = await r.json();
     if (d.error) return res.status(400).json({ error: d.error.message });
     if (!d.items?.length) return res.status(404).json({ error: "Channel not found. Check your handle and try again." });
@@ -29,7 +29,7 @@ app.get("/channel", async (req, res) => {
   const { channelId } = req.query;
   if (!channelId) return res.status(400).json({ error: "Missing channelId" });
   try {
-    const r = await fetch(`${YT}/channels?part=snippet,statistics,contentDetails&id=${channelId}&key=${process.env.YT_API_KEY}`);
+    const r = await fetch(`${YT}/channels?part=snippet,statistics,contentDetails,brandingSettings&id=${channelId}&key=${process.env.YT_API_KEY}`);
     const d = await r.json();
     if (d.error) return res.status(400).json({ error: d.error.message });
     res.json(d);
