@@ -377,29 +377,75 @@ app.post("/connect/refresh-token", async (req, res) => {
 });
 
 // ── GET /analytics — pull private YouTube Analytics for a connected channel
-//    (foundation endpoint — used in Stage 4 of the build)
+// Supports multiple report types via the ?type= parameter:
+//   type=summary       (default) — core metrics over the date range
+//   type=traffic       — views grouped by traffic source
+//   type=demographics  — viewer age and gender breakdown
+//   type=geography     — top countries by views
+//   type=subscribers   — subscriber gained/lost over time
 app.get("/analytics", async (req, res) => {
   try {
-    const { channelId, accessToken, startDate, endDate, metrics } = req.query;
+    const { channelId, accessToken, startDate, endDate, type } = req.query;
     if (!channelId || !accessToken) {
       return res.status(400).json({ error: "Missing channelId or accessToken" });
     }
     const end = endDate || new Date().toISOString().split("T")[0];
     const start = startDate || new Date(Date.now() - 28 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
-    const defaultMetrics = "views,estimatedMinutesWatched,averageViewDuration,averageViewPercentage,subscribersGained,subscribersLost,likes,comments,shares";
-    const requestedMetrics = metrics || defaultMetrics;
+    const reportType = type || "summary";
 
-    const url = `https://youtubeanalytics.googleapis.com/v2/reports?ids=channel%3D%3D${encodeURIComponent(channelId)}&startDate=${start}&endDate=${end}&metrics=${encodeURIComponent(requestedMetrics)}`;
+    // Build the YouTube Analytics request based on report type
+    let metrics, dimensions = "", filters = "", sort = "", maxResults = "";
+    switch (reportType) {
+      case "summary":
+        metrics = "views,estimatedMinutesWatched,averageViewDuration,averageViewPercentage,subscribersGained,subscribersLost,likes,comments,shares";
+        break;
+      case "traffic":
+        metrics = "views,estimatedMinutesWatched";
+        dimensions = "insightTrafficSourceType";
+        sort = "-views";
+        break;
+      case "demographics":
+        metrics = "viewerPercentage";
+        dimensions = "ageGroup,gender";
+        sort = "-viewerPercentage";
+        break;
+      case "geography":
+        metrics = "views,estimatedMinutesWatched";
+        dimensions = "country";
+        sort = "-views";
+        maxResults = "10";
+        break;
+      case "subscribers":
+        metrics = "subscribersGained,subscribersLost";
+        dimensions = "day";
+        sort = "day";
+        break;
+      default:
+        return res.status(400).json({ error: "Invalid report type. Use summary, traffic, demographics, geography or subscribers." });
+    }
+
+    // Construct the URL
+    const params = new URLSearchParams();
+    params.append("ids", `channel==${channelId}`);
+    params.append("startDate", start);
+    params.append("endDate", end);
+    params.append("metrics", metrics);
+    if (dimensions) params.append("dimensions", dimensions);
+    if (filters) params.append("filters", filters);
+    if (sort) params.append("sort", sort);
+    if (maxResults) params.append("maxResults", maxResults);
+
+    const url = `https://youtubeanalytics.googleapis.com/v2/reports?${params.toString()}`;
 
     const r = await fetch(url, {
       headers: { Authorization: `Bearer ${accessToken}` },
     });
     const data = await r.json();
     if (!r.ok) {
-      console.error("analytics failed", data);
-      return res.status(400).json({ error: data.error?.message || "Analytics request failed" });
+      console.error("analytics failed", reportType, data);
+      return res.status(400).json({ error: data.error?.message || "Analytics request failed", type: reportType });
     }
-    res.json(data);
+    res.json({ type: reportType, startDate: start, endDate: end, ...data });
   } catch (e) {
     console.error("analytics error", e);
     res.status(500).json({ error: e.message });
