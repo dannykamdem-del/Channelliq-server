@@ -258,11 +258,35 @@ function isSpam(text) {
 }
 
 // ── LANGUAGE DETECTION ────────────────────────────────────────────────────────
+// Improved language detection (Sprint 3.5).
+// English-only sentiment works fine, but Claude's sentiment is more accurate
+// with translated input. Cast a wider net by checking:
+//   1. Non-Latin scripts (Cyrillic, CJK, Arabic, Thai, Hindi, etc) → translate
+//   2. Latin-extended accented characters that English doesn't use → translate
+//   3. A much larger bag of common function words across major YouTube languages
 function detectLanguage(text) {
-  const nonLatin = /[^\u0000-\u024F\u1E00-\u1EFF]/;
-  if (nonLatin.test(text)) return "non-latin";
-  const likely_non_english = /\b(das|der|die|und|ich|que|est|les|une|por|para|com|uma|não|sie|auf|mit|von)\b/i;
-  if (likely_non_english.test(text)) return "likely-non-english";
+  if (!text || typeof text !== "string") return "en";
+  const t = text.trim();
+  if (t.length < 3) return "en"; // too short to detect
+
+  // 1. Non-Latin scripts — almost certainly need translation
+  // Covers Cyrillic, Greek, Hebrew, Arabic, Devanagari, Thai, Hangul, Japanese, Chinese, etc.
+  if (/[\u0370-\u03FF\u0400-\u04FF\u0500-\u052F\u0590-\u05FF\u0600-\u06FF\u0700-\u074F\u0900-\u097F\u0E00-\u0E7F\uAC00-\uD7AF\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]/.test(t)) {
+    return "non-latin";
+  }
+
+  // 2. Accented characters that English doesn't use (Spanish, Portuguese, French,
+  //    German, Italian, Polish, Vietnamese, Turkish, Czech, Romanian, etc.)
+  if (/[áàâãäåçéèêëíìîïñóòôõöøúùûüýÿæœßÁÀÂÃÄÅÇÉÈÊËÍÌÎÏÑÓÒÔÕÖØÚÙÛÜÝŸÆŒĄĆĘŁŃŚŹŻąćęłńśźżĞŞİığşčďěňřšťůž]/.test(t)) {
+    return "likely-non-english";
+  }
+
+  // 3. Big bag of common non-English function words. Word-boundary case-insensitive match.
+  //    Covers: German, Spanish, French, Italian, Portuguese, Dutch, Polish, Romanian,
+  //    Indonesian/Malay, Tagalog, Vietnamese (Latin), Romanian, Turkish.
+  const nonEn = /\b(das|der|die|und|ich|bin|nicht|aber|auch|sehr|ja|nein|was|ist|sind|haben|kann|wird|werden|sein|mit|von|für|über|bei|aus|nach|durch|ohne|gegen|que|qué|para|por|con|sin|pero|muy|más|mejor|también|cómo|cuándo|dónde|porqué|gracias|hola|sí|aquí|allí|cuál|une|un|une|deux|trois|c\u2019est|cest|n\u2019est|tres|très|aussi|merci|bonjour|oui|non|mais|avec|sans|pour|sur|sous|sopra|sotto|sempre|grazie|ciao|sì|però|com|uma|para|porque|obrigad|olá|sim|não|ainda|onde|quando|quem|mais|menos|met|niet|ook|hoe|wat|waar|maar|zonder|voor|naar|dziękuję|jest|być|mam|ten|dla|jak|gdzie|kiedy|mulțumesc|așa|când|unde|cum|cred|terima|kasih|tidak|saya|kamu|untuk|dengan|tetapi|salamat|po|kasi|kasi|naman|talaga|teşekkür|merhaba|evet|hayır|nasıl|nerede|neden|nasıl|cảm|ơn|không|được|và|làm|tôi|của|ở)\b/i;
+  if (nonEn.test(t)) return "likely-non-english";
+
   return "en";
 }
 
@@ -422,6 +446,12 @@ app.post("/sentiment", async (req, res) => {
     cacheKey,        // pre-computed from /sentiment-preflight (optional)
     filters,         // { startDate, endDate, formatFilter, topN, videoIds }
     forceFresh,      // if true, skip cache lookup
+    // Sprint 3.5 fix: client now computes accurate population stats and sends them.
+    // The server merges these into the response so the user sees TRUE totals,
+    // not the sampled subset.
+    clientPipelineStats, // { total, afterSpamFilter, spamRemoved } from full raw fetch
+    clientEmojiStats,    // emoji counts from the FULL raw population (not just sample)
+    clientSpamSample,    // up to 50 spam comments for the drill-down view
   } = req.body;
   if (!comments || !comments.length) return res.status(400).json({ error: "No comments provided" });
 
@@ -551,24 +581,46 @@ Return exactly:
       }
     }
 
+    // Sprint 3.5 fix: prefer client-provided population stats (true totals)
+    // over server stats (only the sampled subset). When client stats aren't
+    // available (older client), fall back to server stats.
+    //
+    // Translation count is upweighted: if X% of the sample needed translating,
+    // we estimate that X% of the population did too.
+    const samplePostSpam = stats.afterSpamFilter; // # comments in sample after server spam filter
+    const sampleTranslated = stats.translated;
+    const translatedRate = samplePostSpam > 0 ? sampleTranslated / samplePostSpam : 0;
+    const populationAfterSpam = clientPipelineStats?.afterSpamFilter ?? stats.afterSpamFilter;
+    const estimatedPopulationTranslated = Math.round(populationAfterSpam * translatedRate);
+
     const fullResult = {
       ...result,
-      pipelineStats: { ...stats, sampleSize: sampled.length },
+      pipelineStats: {
+        // Show TRUE population totals (from client) — falls back to sample if unavailable
+        total: clientPipelineStats?.total ?? stats.total,
+        afterSpamFilter: populationAfterSpam,
+        spamRemoved: clientPipelineStats?.spamRemoved ?? stats.spamRemoved,
+        translated: estimatedPopulationTranslated,
+        // Sample size is for internal use, not displayed to end users
+        _sampleSize: sampled.length,
+      },
       mostLiked: stats.mostLiked,
-      spamSample: spam.slice(0, 50),
-      emojiStats,
+      // Prefer client's spam sample (real spam from full population), fall back to server
+      spamSample: clientSpamSample && clientSpamSample.length ? clientSpamSample : spam.slice(0, 50),
+      // Prefer client's emoji stats (counted from full population)
+      emojiStats: clientEmojiStats || emojiStats,
       cached: false,
     };
 
     // === Step 4: Save to cache + record paid run ===
     if (channelId && key) {
-      saveCachedSentiment(channelId, key, fullResult, stats.afterSpamFilter, sampled.length)
+      saveCachedSentiment(channelId, key, fullResult, populationAfterSpam, sampled.length)
         .catch(e => console.error("cache save failed", e));
     }
     recordAnalysisRun({
       userId, channelId,
       cacheHit: false,
-      commentsAnalysed: stats.afterSpamFilter,
+      commentsAnalysed: populationAfterSpam,
       sampleSize: sampled.length,
       filters,
     }).catch(e => console.error("run record failed", e));
