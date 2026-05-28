@@ -512,7 +512,7 @@ Return exactly:
       },
       body: JSON.stringify({
         model: "claude-haiku-4-5-20251001",
-        max_tokens: 1500,
+        max_tokens: 6000,
         messages: [{ role: "user", content: prompt }]
       })
     }, 25000); // 25 second timeout — well within Railway's request limit
@@ -524,7 +524,32 @@ Return exactly:
     const d = await r.json();
     if (d.error) return res.status(400).json({ error: d.error.message, type: d.error.type });
     const raw = (d.content || []).map(b => b.text || "").join("");
-    const result = JSON.parse(raw.replace(/```json|```/g, "").trim());
+    const cleaned = raw.replace(/```json|```/g, "").trim();
+    let result;
+    try {
+      result = JSON.parse(cleaned);
+    } catch (parseErr) {
+      // Fallback: truncate to the last complete JSON object closure and retry
+      const lastBrace = cleaned.lastIndexOf("}");
+      if (lastBrace > 0) {
+        try {
+          result = JSON.parse(cleaned.slice(0, lastBrace + 1));
+          console.warn("Sentiment JSON was repaired — original was truncated by", cleaned.length - lastBrace - 1, "chars");
+        } catch (retryErr) {
+          console.error("Sentiment JSON repair also failed:", retryErr.message);
+          return res.status(502).json({
+            error: "AI returned malformed output. This usually means the response was too long. Try selecting fewer videos and retry.",
+            detail: parseErr.message,
+          });
+        }
+      } else {
+        console.error("Sentiment JSON unparseable:", parseErr.message);
+        return res.status(502).json({
+          error: "AI returned an unparseable response. Please retry.",
+          detail: parseErr.message,
+        });
+      }
+    }
 
     const fullResult = {
       ...result,
