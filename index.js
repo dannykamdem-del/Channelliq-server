@@ -33,9 +33,15 @@ app.use(express.json({ limit: "25mb" }));
 // SPRINT 3.5: Cost hardening helpers
 // =====================================================================
 
+// Cache schema version — bump this any time we change the shape of the cached
+// response. Existing entries with a different version will be skipped on read,
+// effectively invalidating them without manual cleanup.
+const CACHE_SCHEMA_VERSION = "v2";
+
 // Build a stable hash for cache lookups
 function buildCacheKey(opts) {
   const norm = {
+    _v: CACHE_SCHEMA_VERSION,
     s: opts.startDate || "all",
     e: opts.endDate || "all",
     f: opts.formatFilter || "all",
